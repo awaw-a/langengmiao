@@ -29,6 +29,7 @@ public partial class Main : Control
     private SpinBox _queueSizeInput = null!;
     private CheckButton _enabledToggle = null!;
     private ItemList _historyList = null!;
+    private FileDialog _cs2PathDialog = null!;
 
     public override void _Ready()
     {
@@ -127,6 +128,16 @@ public partial class Main : Control
         };
         footer.AddThemeColorOverride("font_color", new Color("#8b95a5"));
         root.AddChild(footer);
+
+        _cs2PathDialog = new FileDialog
+        {
+            Title = "选择 CS2 安装目录",
+            FileMode = FileDialog.FileModeEnum.OpenDir,
+            Access = FileDialog.AccessEnum.Filesystem,
+            UseNativeDialog = true
+        };
+        _cs2PathDialog.DirSelected += ApplyManualCs2Path;
+        AddChild(_cs2PathDialog);
     }
 
     private Control BuildMemePanel()
@@ -199,9 +210,17 @@ public partial class Main : Control
         _cfgStatusLabel = new Label { Text = "CFG 状态：未安装" };
         panel.AddChild(_cfgStatusLabel);
 
-        var detectButton = new Button { Text = "重新检测 CS2" };
+        var pathActions = new HBoxContainer();
+        pathActions.AddThemeConstantOverride("separation", 8);
+        panel.AddChild(pathActions);
+
+        var detectButton = new Button { Text = "重新检测", SizeFlagsHorizontal = SizeFlags.ExpandFill };
         detectButton.Pressed += DetectCs2Path;
-        panel.AddChild(detectButton);
+        pathActions.AddChild(detectButton);
+
+        var selectPathButton = new Button { Text = "手动选择目录", SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        selectPathButton.Pressed += OpenCs2PathDialog;
+        pathActions.AddChild(selectPathButton);
 
         panel.AddChild(new Label { Text = "游戏内发送键" });
         _triggerKeyButton = new Button { Text = "当前：F8（点击后按键）" };
@@ -304,6 +323,33 @@ public partial class Main : Control
         _config.Save();
         _pathLabel.Text = detected;
         UpdateCfgStatus();
+    }
+
+    private void OpenCs2PathDialog()
+    {
+        if (!string.IsNullOrWhiteSpace(_cfgManager.Cs2Path) && Directory.Exists(_cfgManager.Cs2Path))
+        {
+            _cs2PathDialog.CurrentDir = _cfgManager.Cs2Path;
+        }
+
+        _cs2PathDialog.PopupCenteredRatio(0.8f);
+    }
+
+    private void ApplyManualCs2Path(string selectedDirectory)
+    {
+        try
+        {
+            var cs2Path = _cfgManager.SetCs2Path(selectedDirectory);
+            _config.Cs2Path = cs2Path;
+            _config.Save();
+            _pathLabel.Text = cs2Path;
+            UpdateCfgStatus();
+            SetStatus("CS2 路径已手动设置并保存");
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"CS2 路径设置失败：{exception.Message}");
+        }
     }
 
     private void StartKeyWatcher()
