@@ -1,0 +1,151 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Artifact version used for a dry-run build"
+        required: true
+        default: "v0.1.0-beta.1"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    env:
+      GODOT_VERSION: "4.6.1"
+      GODOT_STATUS: "stable"
+      GODOT_TEMPLATE_VERSION: "4.6.1.stable.mono"
+      RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Cache Godot .NET and export templates
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            tools/godot
+            ~\AppData\Roaming\Godot\export_templates\${{ env.GODOT_TEMPLATE_VERSION }}
+          key: godot-${{ env.GODOT_VERSION }}-${{ env.GODOT_STATUS }}-mono-windows-x64
+
+      - name: Install Godot .NET and export templates
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $releaseBase = "https://github.com/godotengine/godot-builds/releases/download/$env:GODOT_VERSION-$env:GODOT_STATUS"
+          $editorName = "Godot_v$($env:GODOT_VERSION)-$($env:GODOT_STATUS)_mono_win64.zip"
+          $templatesName = "Godot_v$($env:GODOT_VERSION)-$($env:GODOT_STATUS)_mono_export_templates.tpz"
+          $download = Join-Path $env:RUNNER_TEMP "godot-download"
+          $extract = Join-Path $env:RUNNER_TEMP "godot-templates"
+          New-Item -ItemType Directory -Force -Path $download, "tools/godot", $extract | Out-Null
+
+          curl.exe -fL "$releaseBase/$editorName" -o (Join-Path $download $editorName)
+          curl.exe -fL "$releaseBase/$templatesName" -o (Join-Path $download $templatesName)
+          curl.exe -fL "$releaseBase/SHA512-SUMS.txt" -o (Join-Path $download "SHA512-SUMS.txt")
+
+          $sums = Get-Content (Join-Path $download "SHA512-SUMS.txt")
+          foreach ($asset in @($editorName, $templatesName)) {
+            $expected = (($sums | Where-Object { $_ -match "\s+$([regex]::Escape($asset))$" }) -split "\s+")[0].ToLowerInvariant()
+            $actual = (Get-FileHash (Join-Path $download $asset) -Algorithm SHA512).Hash.ToLowerInvariant()
+            if ([string]::IsNullOrWhiteSpace($expected) -or $actual -ne $expected) {
+              throw "SHA-512 verification failed for $asset"
+            }
+          }
+
+          Expand-Archive (Join-Path $download $editorName) -DestinationPath "tools/godot" -Force
+          $templateEntries = @(
+            "templates/version.txt",
+            "templates/windows_debug_x86_64_console.exe",
+            "templates/windows_debug_x86_64.exe",
+            "templates/windows_release_x86_64_console.exe",
+            "templates/windows_release_x86_64.exe"
+          )
+          & tar.exe -xf (Join-Path $download $templatesName) -C $extract @templateEntries
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $templateTarget = Join-Path $env:APPDATA "Godot/export_templates/$env:GODOT_TEMPLATE_VERSION"
+          New-Item -ItemType Directory -Force -Path $templateTarget | Out-Null
+          Copy-Item (Join-Path $extract "templates/*") $templateTarget -Recurse -Force
+
+      - name: Resolve Godot executable
+        shell: pwsh
+        run: |
+          $godot = Get-ChildItem "tools/godot" -Recurse -Filter "Godot_*_mono_win64_console.exe" | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $godot) { throw "Godot .NET executable was not found" }
+          "GODOT_EXE=$godot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Set Windows version from tag
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_VERSION.TrimStart("v").Split("-")[0]
+          $parts = [Collections.Generic.List[string]]::new([string[]]$version.Split("."))
+          while ($parts.Count -lt 4) { $parts.Add("0") }
+          $windowsVersion = ($parts | Select-Object -First 4) -join "."
+          $preset = [IO.File]::ReadAllText("export_presets.cfg")
+          $preset = [regex]::Replace($preset, 'application/file_version="[^"]*"', "application/file_version=`"$windowsVersion`"")
+          $preset = [regex]::Replace($preset, 'application/product_version="[^"]*"', "application/product_version=`"$windowsVersion`"")
+          [IO.File]::WriteAllText("export_presets.cfg", $preset, [Text.UTF8Encoding]::new($false))
+
+      - name: Restore and build
+        shell: pwsh
+        run: |
+          dotnet restore Lanmian.csproj
+          dotnet build Lanmian.csproj --configuration Release --no-restore --nologo
+
+      - name: Export Windows x64
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          & $env:GODOT_EXE --headless --path . --export-release "Windows Desktop" "dist/Lanmian.exe" 2>&1 | Tee-Object "export.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Select-String "export.log" -Pattern "ERROR: Export .NET Project|Project export.*failed") {
+            throw "Godot reported an export error"
+          }
+          if (-not (Test-Path "dist/Lanmian.exe")) { throw "Export did not create dist/Lanmian.exe" }
+          if (-not (Get-ChildItem "dist" -Recurse -Filter "Lanmian.dll")) { throw "Export did not create Lanmian.dll" }
+
+      - name: Package portable ZIP and checksum
+        shell: pwsh
+        run: |
+          $packageName = "langengmiao-$env:RELEASE_VERSION-windows-x64"
+          $packageDir = Join-Path "release" $packageName
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          Copy-Item "dist/*" $packageDir -Recurse -Force
+          Copy-Item "README.md" $packageDir -Force
+          $zip = Join-Path "release" "$packageName.zip"
+          Compress-Archive -Path $packageDir -DestinationPath $zip -CompressionLevel Optimal
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $([IO.Path]::GetFileName($zip))" | Set-Content "$zip.sha256" -Encoding ascii
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: langengmiao-${{ env.RELEASE_VERSION }}-windows-x64
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = Get-ChildItem "release" -File | Select-Object -ExpandProperty FullName
+          $arguments = @("release", "create", $env:RELEASE_VERSION, "--verify-tag", "--generate-notes", "--title", "烂梗喵 $env:RELEASE_VERSION")
+          if ($env:RELEASE_VERSION.Contains("-")) { $arguments += "--prerelease" }
+          $arguments += $assets
+          gh @arguments
