@@ -7,11 +7,13 @@ public sealed class AppConfig
 {
     public const string ApiBaseUrl = "https://hguofichp.cn:10086";
     public string TriggerKey { get; set; } = "F8";
-    public string ChatKey { get; set; } = "Y";
-    public int KeyDelayMs { get; set; } = 100;
-    public int CooldownMs { get; set; } = 1500;
-    public int QueueSize { get; set; } = 2;
+    public bool TeamChat { get; set; }
+    public int QueueSize { get; set; } = 8;
     public bool Enabled { get; set; } = true;
+    public string Cs2Path { get; set; } = string.Empty;
+    public string ManagedBindingKey { get; set; } = string.Empty;
+    public string ManagedBindingOriginalCommand { get; set; } = string.Empty;
+    public string ManagedSteamAccountId { get; set; } = string.Empty;
 
     private static string ConfigPath => ProjectSettings.GlobalizePath("user://config.json");
 

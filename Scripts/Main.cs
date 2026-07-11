@@ -5,23 +5,28 @@ namespace Lanmian;
 public partial class Main : Control
 {
     private static readonly object LogSync = new();
+
     private AppConfig _config = null!;
     private Sb6657Client _client = null!;
     private MemeQueue _queue = null!;
-    private readonly InputSender _inputSender = new();
+    private Cs2CfgManager _cfgManager = null!;
     private readonly GlobalKeyWatcher _keyWatcher = new();
 
-    private Meme? _currentMeme;
-    private bool _sending;
-    private double _lastSendTime;
+    private Meme? _stagedMeme;
+    private bool _refilling;
+    private bool _installCfgOnReady;
+    private bool _capturingTriggerKey;
+    private string _selectedTriggerKey = "F8";
 
     private Label _statusLabel = null!;
     private Label _queueLabel = null!;
+    private Label _cfgStatusLabel = null!;
+    private Label _pathLabel = null!;
     private TextEdit _memeText = null!;
     private Label _memeMeta = null!;
-    private LineEdit _triggerKeyInput = null!;
-    private LineEdit _chatKeyInput = null!;
-    private SpinBox _delayInput = null!;
+    private Button _triggerKeyButton = null!;
+    private OptionButton _chatScopeInput = null!;
+    private SpinBox _queueSizeInput = null!;
     private CheckButton _enabledToggle = null!;
     private ItemList _historyList = null!;
 
@@ -30,9 +35,13 @@ public partial class Main : Control
         _config = AppConfig.Load();
         _client = new Sb6657Client(AppConfig.ApiBaseUrl);
         _queue = new MemeQueue(_client);
+        _cfgManager = new Cs2CfgManager(_config.Cs2Path);
+        _installCfgOnReady = OS.GetCmdlineUserArgs().Any(argument =>
+            argument.Equals("--install-cfg", StringComparison.OrdinalIgnoreCase));
 
         BuildUi();
         ApplyConfigToUi();
+        DetectCs2Path();
         StartKeyWatcher();
         _ = PrimeAsync();
     }
@@ -41,6 +50,38 @@ public partial class Main : Control
     {
         _keyWatcher.Dispose();
         _client.Dispose();
+    }
+
+    public override void _Input(InputEvent @event)
+    {
+        if (!_capturingTriggerKey) return;
+
+        if (@event is InputEventKey keyEvent && keyEvent.Pressed && !keyEvent.Echo)
+        {
+            var keycode = keyEvent.PhysicalKeycode == Key.None
+                ? keyEvent.Keycode
+                : DisplayServer.KeyboardGetKeycodeFromPhysical(keyEvent.PhysicalKeycode);
+            CaptureTriggerKey(OS.GetKeycodeString(keycode));
+            GetViewport().SetInputAsHandled();
+        }
+        else if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed)
+        {
+            var mouseKey = (int)mouseEvent.ButtonIndex switch
+            {
+                1 => "MOUSE1",
+                2 => "MOUSE2",
+                3 => "MOUSE3",
+                8 => "MOUSE4",
+                9 => "MOUSE5",
+                _ => string.Empty
+            };
+
+            if (!string.IsNullOrEmpty(mouseKey))
+            {
+                CaptureTriggerKey(mouseKey);
+                GetViewport().SetInputAsHandled();
+            }
+        }
     }
 
     private void BuildUi()
@@ -65,7 +106,7 @@ public partial class Main : Control
         title.AddThemeFontSizeOverride("font_size", 30);
         header.AddChild(title);
 
-        var subtitle = new Label { Text = "sb6657 → CS2 一键发梗", VerticalAlignment = VerticalAlignment.Center };
+        var subtitle = new Label { Text = "sb6657 → CS2 CFG 直发", VerticalAlignment = VerticalAlignment.Center };
         subtitle.AddThemeColorOverride("font_color", new Color("#8b95a5"));
         header.AddChild(subtitle);
 
@@ -81,7 +122,7 @@ public partial class Main : Control
 
         var footer = new Label
         {
-            Text = "提示：触发键仅在 CS2 位于前台时生效；本程序不注入或读取 CS2 进程。",
+            Text = "无需进入游戏控制台。请先关闭 CS2，再点击“应用 CFG 绑定”；下次启动游戏时直接生效。",
             AutowrapMode = TextServer.AutowrapMode.WordSmart
         };
         footer.AddThemeColorOverride("font_color", new Color("#8b95a5"));
@@ -95,10 +136,10 @@ public partial class Main : Control
 
         var heading = new HBoxContainer();
         panel.AddChild(heading);
-        var headingLabel = new Label { Text = "下一条烂梗" };
+        var headingLabel = new Label { Text = "下一条待发送烂梗" };
         headingLabel.AddThemeFontSizeOverride("font_size", 20);
         heading.AddChild(headingLabel);
-        _queueLabel = new Label { Text = "队列：0" };
+        _queueLabel = new Label { Text = "缓存：0" };
         _queueLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         _queueLabel.HorizontalAlignment = HorizontalAlignment.Right;
         heading.AddChild(_queueLabel);
@@ -120,19 +161,19 @@ public partial class Main : Control
         actions.AddThemeConstantOverride("separation", 8);
         panel.AddChild(actions);
 
-        var fetchButton = new Button { Text = "获取下一条" };
+        var fetchButton = new Button { Text = "换一条" };
         fetchButton.Pressed += () => _ = LoadNextPreviewAsync();
         actions.AddChild(fetchButton);
 
-        var sendButton = new Button { Text = "立即发送" };
-        sendButton.Pressed += () => _ = SendCurrentAsync("界面按钮");
-        actions.AddChild(sendButton);
+        var installButton = new Button { Text = "应用 CFG 绑定" };
+        installButton.Pressed += () => _ = InstallCfgAsync();
+        actions.AddChild(installButton);
 
-        var copyButton = new Button { Text = "复制" };
-        copyButton.Pressed += CopyCurrent;
-        actions.AddChild(copyButton);
+        var removeCfgButton = new Button { Text = "一键删除烂梗喵 CFG" };
+        removeCfgButton.Pressed += RemoveCfg;
+        actions.AddChild(removeCfgButton);
 
-        var historyTitle = new Label { Text = "本次运行已发送" };
+        var historyTitle = new Label { Text = "本次运行检测到的发送" };
         historyTitle.AddThemeFontSizeOverride("font_size", 16);
         panel.AddChild(historyTitle);
         _historyList = new ItemList { CustomMinimumSize = new Vector2(0, 130) };
@@ -150,28 +191,51 @@ public partial class Main : Control
         title.AddThemeFontSizeOverride("font_size", 20);
         panel.AddChild(title);
 
-        panel.AddChild(new Label { Text = "一键触发键（建议 F8）" });
-        _triggerKeyInput = new LineEdit { PlaceholderText = "F8 / F9 / ...", MaxLength = 8 };
-        panel.AddChild(_triggerKeyInput);
+        panel.AddChild(new Label { Text = "CS2 路径" });
+        _pathLabel = new Label { Text = "正在检测…", AutowrapMode = TextServer.AutowrapMode.WordSmart };
+        _pathLabel.AddThemeColorOverride("font_color", new Color("#8b95a5"));
+        panel.AddChild(_pathLabel);
 
-        panel.AddChild(new Label { Text = "聊天键（Y=全体，U=队内）" });
-        _chatKeyInput = new LineEdit { PlaceholderText = "Y", MaxLength = 8 };
-        panel.AddChild(_chatKeyInput);
+        _cfgStatusLabel = new Label { Text = "CFG 状态：未安装" };
+        panel.AddChild(_cfgStatusLabel);
 
-        panel.AddChild(new Label { Text = "按键间隔（毫秒）" });
-        _delayInput = new SpinBox { MinValue = 30, MaxValue = 500, Step = 10, Value = 100 };
-        panel.AddChild(_delayInput);
+        var detectButton = new Button { Text = "重新检测 CS2" };
+        detectButton.Pressed += DetectCs2Path;
+        panel.AddChild(detectButton);
 
-        _enabledToggle = new CheckButton { Text = "启用一键发送" };
+        panel.AddChild(new Label { Text = "游戏内发送键" });
+        _triggerKeyButton = new Button { Text = "当前：F8（点击后按键）" };
+        _triggerKeyButton.Pressed += BeginTriggerKeyCapture;
+        panel.AddChild(_triggerKeyButton);
+
+        var triggerHint = new Label
+        {
+            Text = "点击上方按钮，再按下键盘按键或鼠标侧键。",
+            AutowrapMode = TextServer.AutowrapMode.WordSmart
+        };
+        triggerHint.AddThemeColorOverride("font_color", new Color("#8b95a5"));
+        panel.AddChild(triggerHint);
+
+        panel.AddChild(new Label { Text = "发送范围" });
+        _chatScopeInput = new OptionButton();
+        _chatScopeInput.AddItem("全体聊天", 0);
+        _chatScopeInput.AddItem("队内聊天", 1);
+        panel.AddChild(_chatScopeInput);
+
+        panel.AddChild(new Label { Text = "后台缓存数量" });
+        _queueSizeInput = new SpinBox { MinValue = 2, MaxValue = 32, Step = 1, Value = 8 };
+        panel.AddChild(_queueSizeInput);
+
+        _enabledToggle = new CheckButton { Text = "启用发送后自动补充下一条" };
         _enabledToggle.Toggled += pressed =>
         {
             _config.Enabled = pressed;
             _config.Save();
-            SetStatus(pressed ? "一键发送已启用" : "一键发送已暂停");
+            SetStatus(pressed ? "后台补充已启用" : "后台补充已暂停");
         };
         panel.AddChild(_enabledToggle);
 
-        var saveButton = new Button { Text = "保存设置并重载触发键" };
+        var saveButton = new Button { Text = "保存设置" };
         saveButton.Pressed += SaveSettings;
         panel.AddChild(saveButton);
 
@@ -181,7 +245,7 @@ public partial class Main : Control
 
         var warning = new Label
         {
-            Text = "自动发送会模拟键盘输入，仅在你明确启用时工作。请先在离线或私人房间测试。",
+            Text = "程序只在后台更新 lanmian_send.cfg；真正的发送由 CS2 自己执行 say/say_team。",
             AutowrapMode = TextServer.AutowrapMode.WordSmart
         };
         warning.AddThemeColorOverride("font_color", new Color("#c98b37"));
@@ -192,10 +256,54 @@ public partial class Main : Control
 
     private void ApplyConfigToUi()
     {
-        _triggerKeyInput.Text = _config.TriggerKey;
-        _chatKeyInput.Text = _config.ChatKey;
-        _delayInput.Value = _config.KeyDelayMs;
+        _selectedTriggerKey = KeyMap.TryNormalize(_config.TriggerKey, out var normalizedKey) ? normalizedKey : "F8";
+        UpdateTriggerKeyButton();
+        _chatScopeInput.Select(_config.TeamChat ? 1 : 0);
+        _queueSizeInput.Value = Math.Clamp(_config.QueueSize, 2, 32);
         _enabledToggle.SetPressedNoSignal(_config.Enabled);
+    }
+
+    private void BeginTriggerKeyCapture()
+    {
+        _capturingTriggerKey = true;
+        _triggerKeyButton.Text = "请按下发送键…";
+        SetStatus("正在捕获发送键；请按下键盘按键或鼠标侧键");
+    }
+
+    private void CaptureTriggerKey(string keyName)
+    {
+        if (!KeyMap.TryNormalize(keyName, out var normalizedKey))
+        {
+            SetStatus($"暂不支持按键：{keyName}，请换一个键");
+            return;
+        }
+
+        _capturingTriggerKey = false;
+        _selectedTriggerKey = normalizedKey;
+        UpdateTriggerKeyButton();
+        SaveSettings();
+    }
+
+    private void UpdateTriggerKeyButton()
+    {
+        _triggerKeyButton.Text = $"当前：{_selectedTriggerKey}（点击后按键）";
+    }
+
+    private void DetectCs2Path()
+    {
+        var detected = _cfgManager.DetectCs2Path();
+        if (string.IsNullOrWhiteSpace(detected))
+        {
+            _pathLabel.Text = "未找到 CS2，请先启动游戏后重新检测";
+            _cfgStatusLabel.Text = "CFG 状态：不可用";
+            SetStatus("未检测到 CS2 安装目录");
+            return;
+        }
+
+        _config.Cs2Path = detected;
+        _config.Save();
+        _pathLabel.Text = detected;
+        UpdateCfgStatus();
     }
 
     private void StartKeyWatcher()
@@ -206,20 +314,31 @@ public partial class Main : Control
 
     private void SaveSettings()
     {
-        var trigger = _triggerKeyInput.Text.Trim().ToUpperInvariant();
-        var chat = _chatKeyInput.Text.Trim().ToUpperInvariant();
-        if (KeyMap.Parse(trigger) == 0 || KeyMap.Parse(chat) == 0)
+        try
         {
-            SetStatus("按键无效，请使用 F8、F9、Y、U 等按键");
-            return;
-        }
+            var trigger = Cs2CfgManager.NormalizeCfgKey(_selectedTriggerKey).ToUpperInvariant();
+            _config.TriggerKey = trigger;
+            _config.TeamChat = _chatScopeInput.Selected == 1;
+            _config.QueueSize = (int)_queueSizeInput.Value;
+            _config.Save();
+            _keyWatcher.Start(_config.TriggerKey);
 
-        _config.TriggerKey = trigger;
-        _config.ChatKey = chat;
-        _config.KeyDelayMs = (int)_delayInput.Value;
-        _config.Save();
-        _keyWatcher.Start(_config.TriggerKey);
-        SetStatus("设置已保存，触发键已重载");
+            if (_cfgManager.IsInstalled() && _stagedMeme != null)
+            {
+                ApplyCfgAndUserBinding();
+                SetStatus("发送键和 CS2 用户绑定已更新；启动游戏后直接生效");
+            }
+            else
+            {
+                SetStatus("设置已保存");
+            }
+
+            UpdateCfgStatus();
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"保存设置失败：{exception.Message}");
+        }
     }
 
     private async Task PrimeAsync()
@@ -227,8 +346,18 @@ public partial class Main : Control
         try
         {
             SetStatus("正在从 sb6657 获取烂梗…");
-            await _queue.EnsureAsync(Math.Max(1, _config.QueueSize));
-            await LoadNextPreviewAsync();
+            await _queue.EnsureAsync(Math.Max(2, _config.QueueSize));
+            await LoadNextPreviewAsync(false);
+            if (_installCfgOnReady)
+            {
+                _installCfgOnReady = false;
+                await InstallCfgAsync();
+            }
+            else if (_cfgManager.IsInstalled() && _stagedMeme != null)
+            {
+                _cfgManager.StageMeme(_stagedMeme, _config.TeamChat);
+                SetStatus("CFG 已就绪，游戏内按发送键即可直发");
+            }
         }
         catch (Exception exception)
         {
@@ -236,20 +365,21 @@ public partial class Main : Control
         }
     }
 
-    private async Task LoadNextPreviewAsync()
+    private async Task LoadNextPreviewAsync(bool stageToCfg = true)
     {
         try
         {
-            _currentMeme = await _queue.TakeAsync();
-            if (_currentMeme == null)
+            _stagedMeme = await _queue.TakeAsync();
+            if (_stagedMeme == null)
             {
                 SetStatus("暂时没有获取到烂梗");
                 return;
             }
 
+            if (stageToCfg && _cfgManager.IsInstalled()) _cfgManager.StageMeme(_stagedMeme, _config.TeamChat);
             UpdatePreview();
-            _ = _queue.EnsureAsync(Math.Max(1, _config.QueueSize));
-            SetStatus("烂梗已准备，按触发键即可发送");
+            _ = _queue.EnsureAsync(Math.Max(2, _config.QueueSize));
+            SetStatus(_cfgManager.IsInstalled() ? "下一条烂梗已写入 CFG" : "烂梗已准备，请先安装 CFG");
         }
         catch (Exception exception)
         {
@@ -257,64 +387,102 @@ public partial class Main : Control
         }
     }
 
-    private void HandleHotkey()
+    private async Task InstallCfgAsync()
     {
-        if (!_config.Enabled || _sending) return;
-        _ = SendCurrentAsync("触发键");
-    }
-
-    private async Task SendCurrentAsync(string source)
-    {
-        if (_sending) return;
-        if (!Cs2WindowChecker.IsCs2Foreground())
-        {
-            SetStatus("未发送：CS2 不是当前活动窗口");
-            return;
-        }
-
-        var now = Time.GetTicksMsec();
-        if (now - _lastSendTime < _config.CooldownMs)
-        {
-            SetStatus("发送过快，请稍后再试");
-            return;
-        }
-
-        _sending = true;
         try
         {
-            if (_currentMeme == null) _currentMeme = await _queue.TakeAsync();
-            if (_currentMeme == null) throw new InvalidOperationException("没有可发送的烂梗");
+            if (string.IsNullOrWhiteSpace(_cfgManager.DetectCs2Path())) throw new InvalidOperationException("未找到 CS2 安装目录");
+            if (_stagedMeme == null) await LoadNextPreviewAsync(false);
+            if (_stagedMeme == null) throw new InvalidOperationException("没有可写入的烂梗");
 
-            var meme = _currentMeme;
-            SetStatus($"正在发送（{source}）…");
-            await _inputSender.SendAsync(meme.Text, _config.ChatKey, _config.KeyDelayMs);
-            _lastSendTime = Time.GetTicksMsec();
-            _historyList.AddItem($"#{meme.Id}  {meme.Text}");
-            _currentMeme = null;
-            UpdatePreview();
-            SetStatus("发送成功，正在准备下一条");
-            _ = LoadNextPreviewAsync();
+            ApplyCfgAndUserBinding();
+            _config.Cs2Path = _cfgManager.Cs2Path;
+            _config.Save();
+            UpdateCfgStatus();
+            SetStatus("CFG 和 CS2 用户按键绑定已完成；启动游戏后直接生效");
         }
         catch (Exception exception)
         {
-            SetStatus($"发送失败：{exception.Message}");
-        }
-        finally
-        {
-            _sending = false;
+            SetStatus($"CFG 安装失败：{exception.Message}");
         }
     }
 
-    private void CopyCurrent()
+    private void RemoveCfg()
     {
-        if (_currentMeme == null)
+        try
         {
-            SetStatus("当前没有烂梗");
-            return;
+            if (string.IsNullOrWhiteSpace(_cfgManager.DetectCs2Path())) throw new InvalidOperationException("未找到 CS2 安装目录");
+            var bindingManager = new Cs2UserBindingsManager(_cfgManager.Cs2Path);
+            var bindingsChanged = bindingManager.Remove(
+                _config.ManagedSteamAccountId,
+                _config.ManagedBindingKey,
+                _config.ManagedBindingOriginalCommand);
+            var cfgChanged = _cfgManager.Restore();
+            _config.ManagedSteamAccountId = string.Empty;
+            _config.ManagedBindingKey = string.Empty;
+            _config.ManagedBindingOriginalCommand = string.Empty;
+            _config.Save();
+            UpdateCfgStatus();
+            SetStatus(bindingsChanged || cfgChanged
+                ? "已清理烂梗喵 CFG 和旧按键绑定，并恢复被覆盖的原命令；其他配置未改动"
+                : "未发现可删除的烂梗喵 CFG；其他 CFG 未改动");
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"删除 CFG 失败：{exception.Message}");
+        }
+    }
+
+    private void ApplyCfgAndUserBinding()
+    {
+        if (_stagedMeme == null) throw new InvalidOperationException("没有可写入的烂梗");
+        if (Cs2UserBindingsManager.IsCs2Running())
+        {
+            throw new InvalidOperationException("请先关闭 CS2，再应用绑定，避免游戏退出时覆盖新按键");
         }
 
-        DisplayServer.ClipboardSet(_currentMeme.Text);
-        SetStatus("已复制到剪贴板");
+        _cfgManager.Install(_config.TriggerKey, _config.TeamChat, _stagedMeme);
+        var bindingManager = new Cs2UserBindingsManager(_cfgManager.Cs2Path);
+        var managed = bindingManager.Apply(
+            _config.TriggerKey,
+            _config.ManagedSteamAccountId,
+            _config.ManagedBindingKey,
+            _config.ManagedBindingOriginalCommand);
+        _config.ManagedSteamAccountId = managed.AccountId;
+        _config.ManagedBindingKey = managed.Key;
+        _config.ManagedBindingOriginalCommand = managed.OriginalCommand;
+        _config.Save();
+    }
+
+    private void HandleHotkey()
+    {
+        if (!_config.Enabled || _refilling || !_cfgManager.IsInstalled()) return;
+        if (_stagedMeme != null) _historyList.AddItem($"#{_stagedMeme.Id}  {_stagedMeme.Text}");
+        _ = RefillAfterTriggerAsync();
+    }
+
+    private async Task RefillAfterTriggerAsync()
+    {
+        _refilling = true;
+        try
+        {
+            SetStatus("检测到发送键，正在补充下一条…");
+            await Task.Delay(250);
+            _stagedMeme = await _queue.TakeAsync();
+            if (_stagedMeme == null) throw new InvalidOperationException("缓存中没有可用烂梗");
+            _cfgManager.StageMeme(_stagedMeme, _config.TeamChat);
+            UpdatePreview();
+            _ = _queue.EnsureAsync(Math.Max(2, _config.QueueSize));
+            SetStatus("下一条烂梗已写入 CFG");
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"补充下一条失败：{exception.Message}");
+        }
+        finally
+        {
+            _refilling = false;
+        }
     }
 
     private async Task TestConnectionAsync()
@@ -333,24 +501,29 @@ public partial class Main : Control
 
     private void UpdatePreview()
     {
-        if (_currentMeme == null)
+        if (_stagedMeme == null)
         {
             _memeText.Text = "暂无烂梗";
-            _memeMeta.Text = "点击“获取下一条”重试";
+            _memeMeta.Text = "点击“换一条”重试";
         }
         else
         {
-            _memeText.Text = _currentMeme.Text;
-            _memeMeta.Text = $"ID: {_currentMeme.Id}    标签: {_currentMeme.Tags}    投稿: {_currentMeme.SubmitTime}";
+            _memeText.Text = _stagedMeme.Text;
+            _memeMeta.Text = $"ID: {_stagedMeme.Id}    标签: {_stagedMeme.Tags}    投稿: {_stagedMeme.SubmitTime}";
         }
 
-        _queueLabel.Text = $"队列：{_queue.Count}";
+        _queueLabel.Text = $"缓存：{_queue.Count}";
+    }
+
+    private void UpdateCfgStatus()
+    {
+        _cfgStatusLabel.Text = _cfgManager.IsInstalled() ? "CFG 状态：已安装" : "CFG 状态：未安装";
     }
 
     private void SetStatus(string message)
     {
         if (IsInstanceValid(_statusLabel)) _statusLabel.Text = message;
-        if (IsInstanceValid(_queueLabel)) _queueLabel.Text = $"队列：{_queue.Count}";
+        if (IsInstanceValid(_queueLabel)) _queueLabel.Text = $"缓存：{_queue.Count}";
         AppendLog(message);
     }
 
@@ -368,7 +541,7 @@ public partial class Main : Control
         }
         catch
         {
-            // 日志失败不应影响发送。
+            // 日志失败不应影响程序运行。
         }
     }
 }
