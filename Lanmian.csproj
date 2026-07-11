@@ -6,6 +6,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Lanmian</AssemblyName>
     <RootNamespace>Lanmian</RootNamespace>
+    <DefaultItemExcludes>$(DefaultItemExcludes);appdata/**</DefaultItemExcludes>
   </PropertyGroup>
 </Project>
-
