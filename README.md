@@ -44,3 +44,16 @@
 ## sb6657 接口约定
 
 第三方客户端不携带 sb6657 官网专用的来源统计请求头。程序只使用公开随机烂梗接口的 JSON 响应。
+
+## 发布
+
+项目使用 Godot 4.6.1 .NET 和 .NET 8 导出 Windows x64 便携版。推送以 `v` 开头的标签会触发 GitHub Actions，自动生成 ZIP、SHA-256 校验文件和 GitHub Release；带连字符的版本（例如 `v0.1.0-beta.1`）会标记为预发布。
+
+在正式打标签前，可以从 GitHub Actions 手动运行 `Release` 工作流做一次 dry run。手动运行只上传 14 天有效的构建 Artifact，不会创建 GitHub Release。
+
+```powershell
+git tag v0.1.0-beta.1
+git push origin v0.1.0-beta.1
+```
+
+正式发布前应先在未安装 Godot 和 .NET SDK 的干净 Windows 环境中验证 ZIP。应用和删除 CS2 按键绑定前必须关闭 CS2。
