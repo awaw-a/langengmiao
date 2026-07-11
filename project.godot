@@ -1,0 +1,27 @@
+; 烂梗喵 - Godot 4 C# desktop application
+config_version=5
+
+[application]
+
+config/name="烂梗喵"
+config/description="从 sb6657 获取烂梗并在 CS2 中一键发送"
+run/main_scene="res://Main.tscn"
+config/features=PackedStringArray("4.6", "C#", "GL Compatibility")
+boot_splash/show_image=false
+
+[display]
+
+window/size/viewport_width=1040
+window/size/viewport_height=700
+window/size/window_width_override=1040
+window/size/window_height_override=700
+window/stretch/mode="canvas_items"
+
+[dotnet]
+
+project/assembly_name="Lanmian"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

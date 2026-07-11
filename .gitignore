@@ -1,0 +1,13 @@
+.godot/
+.mono/
+.godot-sdk/
+.dotnet/
+.nuget/
+appdata/
+bin/
+obj/
+*.user
+*.suo
+user://
+logs/
+godot-*.log

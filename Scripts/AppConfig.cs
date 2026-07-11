@@ -1,0 +1,55 @@
+using System.Text.Json;
+using Godot;
+
+namespace Lanmian;
+
+public sealed class AppConfig
+{
+    public string ApiBaseUrl { get; set; } = "https://hguofichp.cn:10086";
+    public string TriggerKey { get; set; } = "F8";
+    public string ChatKey { get; set; } = "Y";
+    public int KeyDelayMs { get; set; } = 100;
+    public int CooldownMs { get; set; } = 1500;
+    public int QueueSize { get; set; } = 2;
+    public bool Enabled { get; set; } = true;
+
+    private static string ConfigPath => ProjectSettings.GlobalizePath("user://config.json");
+
+    public static AppConfig Load()
+    {
+        try
+        {
+            if (File.Exists(ConfigPath))
+            {
+                var json = File.ReadAllText(ConfigPath);
+                return JsonSerializer.Deserialize<AppConfig>(json, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                }) ?? new AppConfig();
+            }
+        }
+        catch
+        {
+            // 损坏的配置不应阻止程序启动，直接回退默认值。
+        }
+
+        return new AppConfig();
+    }
+
+    public void Save()
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(ConfigPath);
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+
+            var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(ConfigPath, json);
+        }
+        catch
+        {
+            // 配置保存失败会由界面状态提示，不能让发送流程崩溃。
+        }
+    }
+}
+
