@@ -18,7 +18,7 @@ public sealed class Cs2CfgManager
 
     public Cs2CfgManager(string configuredPath)
     {
-        Cs2Path = ValidateCs2Path(configuredPath) ? Path.GetFullPath(configuredPath) : string.Empty;
+        Cs2Path = FindCs2Root(configuredPath);
     }
 
     public string DetectCs2Path()
@@ -38,6 +38,17 @@ public sealed class Cs2CfgManager
         }
 
         return string.Empty;
+    }
+
+    public string SetCs2Path(string selectedDirectory)
+    {
+        var cs2Root = FindCs2Root(selectedDirectory);
+        if (string.IsNullOrWhiteSpace(cs2Root))
+        {
+            throw new InvalidOperationException("所选目录不是有效的 CS2 安装目录");
+        }
+
+        return SetPath(cs2Root);
     }
 
     public bool IsInstalled()
@@ -134,6 +145,38 @@ public sealed class Cs2CfgManager
         return !string.IsNullOrWhiteSpace(path) &&
                Directory.Exists(path) &&
                File.Exists(Path.Combine(path, "game", "csgo", "pak01_dir.vpk"));
+    }
+
+    private static string FindCs2Root(string? selectedDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(selectedDirectory)) return string.Empty;
+
+        try
+        {
+            var directory = new DirectoryInfo(Path.GetFullPath(selectedDirectory));
+            if (ValidateCs2Path(directory.FullName)) return directory.FullName;
+
+            if (directory.Name.Equals("game", StringComparison.OrdinalIgnoreCase) &&
+                directory.Parent != null && ValidateCs2Path(directory.Parent.FullName))
+                return directory.Parent.FullName;
+
+            if (directory.Name.Equals("csgo", StringComparison.OrdinalIgnoreCase) &&
+                directory.Parent?.Name.Equals("game", StringComparison.OrdinalIgnoreCase) == true &&
+                directory.Parent.Parent != null && ValidateCs2Path(directory.Parent.Parent.FullName))
+                return directory.Parent.Parent.FullName;
+
+            if (directory.Name.Equals("cfg", StringComparison.OrdinalIgnoreCase) &&
+                directory.Parent?.Name.Equals("csgo", StringComparison.OrdinalIgnoreCase) == true &&
+                directory.Parent.Parent?.Name.Equals("game", StringComparison.OrdinalIgnoreCase) == true &&
+                directory.Parent.Parent.Parent != null && ValidateCs2Path(directory.Parent.Parent.Parent.FullName))
+                return directory.Parent.Parent.Parent.FullName;
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or NotSupportedException or UnauthorizedAccessException)
+        {
+            // Invalid or inaccessible user-selected paths are rejected below.
+        }
+
+        return string.Empty;
     }
 
     private static string DetectFromRunningProcess()
