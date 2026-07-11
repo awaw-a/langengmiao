@@ -18,7 +18,6 @@ public partial class Main : Control
     private Label _queueLabel = null!;
     private TextEdit _memeText = null!;
     private Label _memeMeta = null!;
-    private LineEdit _apiInput = null!;
     private LineEdit _triggerKeyInput = null!;
     private LineEdit _chatKeyInput = null!;
     private SpinBox _delayInput = null!;
@@ -28,7 +27,7 @@ public partial class Main : Control
     public override void _Ready()
     {
         _config = AppConfig.Load();
-        _client = new Sb6657Client(_config.ApiBaseUrl);
+        _client = new Sb6657Client(AppConfig.ApiBaseUrl);
         _queue = new MemeQueue(_client);
 
         BuildUi();
@@ -150,10 +149,6 @@ public partial class Main : Control
         title.AddThemeFontSizeOverride("font_size", 20);
         panel.AddChild(title);
 
-        panel.AddChild(new Label { Text = "sb6657 后端地址" });
-        _apiInput = new LineEdit();
-        panel.AddChild(_apiInput);
-
         panel.AddChild(new Label { Text = "一键触发键（建议 F8）" });
         _triggerKeyInput = new LineEdit { PlaceholderText = "F8 / F9 / ...", MaxLength = 8 };
         panel.AddChild(_triggerKeyInput);
@@ -196,7 +191,6 @@ public partial class Main : Control
 
     private void ApplyConfigToUi()
     {
-        _apiInput.Text = _config.ApiBaseUrl;
         _triggerKeyInput.Text = _config.TriggerKey;
         _chatKeyInput.Text = _config.ChatKey;
         _delayInput.Value = _config.KeyDelayMs;
@@ -219,11 +213,9 @@ public partial class Main : Control
             return;
         }
 
-        _config.ApiBaseUrl = _apiInput.Text.Trim();
         _config.TriggerKey = trigger;
         _config.ChatKey = chat;
         _config.KeyDelayMs = (int)_delayInput.Value;
-        _client.BaseUrl = _config.ApiBaseUrl;
         _config.Save();
         _keyWatcher.Start(_config.TriggerKey);
         SetStatus("设置已保存，触发键已重载");

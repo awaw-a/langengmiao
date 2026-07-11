@@ -5,7 +5,7 @@ namespace Lanmian;
 
 public sealed class AppConfig
 {
-    public string ApiBaseUrl { get; set; } = "https://hguofichp.cn:10086";
+    public const string ApiBaseUrl = "https://hguofichp.cn:10086";
     public string TriggerKey { get; set; } = "F8";
     public string ChatKey { get; set; } = "Y";
     public int KeyDelayMs { get; set; } = 100;
@@ -52,4 +52,3 @@ public sealed class AppConfig
         }
     }
 }
-
