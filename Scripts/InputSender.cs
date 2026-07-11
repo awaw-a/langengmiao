@@ -17,7 +17,31 @@ public sealed class InputSender
     private struct Input
     {
         public uint Type;
+        public InputUnion Data;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)]
+        public MouseInput Mouse;
+
+        [FieldOffset(0)]
         public KeyboardInput Keyboard;
+
+        [FieldOffset(0)]
+        public HardwareInput Hardware;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseInput
+    {
+        public int X;
+        public int Y;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -27,7 +51,15 @@ public sealed class InputSender
         public ushort ScanCode;
         public uint Flags;
         public uint Time;
-        public IntPtr ExtraInfo;
+        public UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HardwareInput
+    {
+        public uint Message;
+        public ushort ParameterLow;
+        public ushort ParameterHigh;
     }
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -101,17 +133,21 @@ public sealed class InputSender
         var input = new Input
         {
             Type = InputKeyboard,
-            Keyboard = new KeyboardInput
+            Data = new InputUnion
             {
-                VirtualKey = virtualKey,
-                Flags = release ? KeyUp : 0
+                Keyboard = new KeyboardInput
+                {
+                    VirtualKey = virtualKey,
+                    Flags = release ? KeyUp : 0
+                }
             }
         };
 
-        if (SendInput(1, [input], Marshal.SizeOf<Input>()) != 1)
+        var inputSize = Marshal.SizeOf<Input>();
+        if (SendInput(1, [input], inputSize) != 1)
         {
-            throw new InvalidOperationException("Windows 输入发送失败");
+            var error = Marshal.GetLastWin32Error();
+            throw new InvalidOperationException($"Windows 输入发送失败（Win32={error}, INPUT={inputSize}）");
         }
     }
 }
-

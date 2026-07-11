@@ -4,6 +4,7 @@ namespace Lanmian;
 
 public partial class Main : Control
 {
+    private static readonly object LogSync = new();
     private AppConfig _config = null!;
     private Sb6657Client _client = null!;
     private MemeQueue _queue = null!;
@@ -350,5 +351,24 @@ public partial class Main : Control
     {
         if (IsInstanceValid(_statusLabel)) _statusLabel.Text = message;
         if (IsInstanceValid(_queueLabel)) _queueLabel.Text = $"队列：{_queue.Count}";
+        AppendLog(message);
+    }
+
+    private static void AppendLog(string message)
+    {
+        try
+        {
+            lock (LogSync)
+            {
+                var path = ProjectSettings.GlobalizePath("user://lanmian.log");
+                var directory = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+                File.AppendAllText(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}{System.Environment.NewLine}");
+            }
+        }
+        catch
+        {
+            // 日志失败不应影响发送。
+        }
     }
 }
