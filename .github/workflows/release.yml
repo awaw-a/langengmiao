@@ -125,6 +125,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
           Copy-Item "dist/*" $packageDir -Recurse -Force
           Copy-Item "README.md" $packageDir -Force
+          Copy-Item "LICENSE" $packageDir -Force
           $zip = Join-Path "release" "$packageName.zip"
           Compress-Archive -Path $packageDir -DestinationPath $zip -CompressionLevel Optimal
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
